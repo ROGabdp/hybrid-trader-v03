@@ -23,6 +23,9 @@ logs/
 
 # Cache & Temporary Data
 *.pkl
+# 但保留 saved_models 資料夾內的 scaler (必要檔案)
+!saved_models_5d/*.pkl
+!saved_models_multivariate/*.pkl
 *.log
 data/processed/
 cache/

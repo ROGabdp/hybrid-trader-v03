@@ -176,12 +176,13 @@ python daily_ops_dual_intraday.py
 ```
 
 **流程說明：**
-1. 從 yfinance 下載當日即時 OHLC
+1. 從**證交所盤中 API** (`mis.twse.com.tw`) 下載當日即時 OHLC *(2025-12-12 更新)*
 2. 使用 CSV 前 5 日成交量平均作為當日預估成交量
 3. 使用上述資料完整訓練 LSTM 模型 (T+5 及 T+1)
 4. 進行 V3/V4 雙策略推論並輸出報告
 
 **特點：**
+- ✅ **即時資料**：使用證交所 API 取得真正的盤中價格（yfinance 有 15+ 分鐘延遲）
 - ✅ 獨立運作，**不需先執行 daily_ops_dual.py**
 - ✅ **不修改原始 CSV** (使用 CSV 交換策略：備份 → 訓練 → 恢復)
 - ✅ 輸出到獨立資料夾 `intraday_runs/YYYY-MM-DD_HHMMSS/`

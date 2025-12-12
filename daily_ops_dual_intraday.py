@@ -83,38 +83,76 @@ def create_intraday_workspace(date_str: str, time_str: str) -> dict:
 
 
 # =============================================================================
-# 輔助函式: 取得盤中 OHLC (from yfinance)
+# 輔助函式: 取得盤中 OHLC (from 證交所即時 API)
 # =============================================================================
 def fetch_intraday_ohlc(ticker: str = "^TWII") -> tuple:
     """
-    從 yfinance 下載當日 OHLC 資料
+    從證交所盤中即時 API 下載當日 OHLC 資料
+    API: https://mis.twse.com.tw/stock/api/getStockInfo.jsp
     
     Returns:
         tuple: (date_str, open, high, low, close) or None if failed
     """
-    print(f"\n[Download] 正在從 yfinance 下載 {ticker} 當日資料...")
+    import requests
+    
+    print(f"\n[Download] 正在從證交所盤中 API 下載即時資料...")
+    
+    # 證交所盤中即時報價 API
+    # tse_t00.tw = 發行量加權股價指數
+    url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://mis.twse.com.tw/stock/index.jsp'
+    }
     
     try:
-        stock = yf.Ticker(ticker)
-        df = stock.history(period="5d")
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
         
-        if df.empty:
-            print(f"[Error] yfinance 無法取得 {ticker} 資料")
+        data = r.json()
+        msg_array = data.get('msgArray', [])
+        
+        if not msg_array:
+            print("[Error] 證交所 API 無資料 (可能非交易時段)")
             return None
         
-        latest = df.iloc[-1]
-        latest_date = df.index[-1].strftime('%Y-%m-%d')
+        item = msg_array[0]
         
-        print(f"  📅 日期: {latest_date}")
-        print(f"  📈 Open: {latest['Open']:.2f}")
-        print(f"  📊 High: {latest['High']:.2f}")
-        print(f"  📉 Low: {latest['Low']:.2f}")
-        print(f"  💰 Close: {latest['Close']:.2f}")
+        # 解析日期 (格式: 20251212 -> 2025-12-12)
+        raw_date = item.get('d', '')
+        if len(raw_date) == 8:
+            date_str = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+        else:
+            date_str = datetime.now().strftime('%Y-%m-%d')
         
-        return (latest_date, latest['Open'], latest['High'], latest['Low'], latest['Close'])
+        # 解析 OHLC
+        o = float(item.get('o', 0))
+        h = float(item.get('h', 0))
+        l = float(item.get('l', 0))
+        z = float(item.get('z', 0))  # z = 即時成交價 (當作 Close)
         
+        # 取得時間
+        time_str = item.get('t', 'N/A')
+        
+        print(f"  📅 日期: {date_str}")
+        print(f"  ⏰ 時間: {time_str}")
+        print(f"  📈 Open: {o:.2f}")
+        print(f"  📊 High: {h:.2f}")
+        print(f"  📉 Low: {l:.2f}")
+        print(f"  💰 即時價: {z:.2f}")
+        
+        return (date_str, o, h, l, z)
+        
+    except requests.exceptions.RequestException as e:
+        print(f"[Error] 證交所 API 連線失敗: {e}")
+        return None
+    except (ValueError, KeyError) as e:
+        print(f"[Error] 證交所 API 資料解析失敗: {e}")
+        return None
     except Exception as e:
-        print(f"[Error] yfinance 下載失敗: {e}")
+        print(f"[Error] 未預期的錯誤: {e}")
         return None
 
 

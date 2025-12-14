@@ -15,7 +15,7 @@
   "price_max": 28334.59,
   "dropout_rate": 0.05,
   "lstm_units": 50,
-  "training_timestamp": "2025-12-11T21:48:47.442413",
+  "training_timestamp": "2025-12-12T09:04:52.316707",
   "technical_indicators": {
     "kd_params": [
       9,
@@ -29,7 +29,7 @@
     ]
   },
   "metrics": {
-    "rmse": 451.47,
-    "r2": 0.2044
+    "rmse": 456.07,
+    "r2": 0.1881
   }
 }

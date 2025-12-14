@@ -2,6 +2,28 @@
 
 這是一個先進的演算法交易系統，結合了用於價格預測的 **LSTM-SSAM** (Long Short-Term Memory with Sequential Self-Attention) 以及用於交易決策的 **Pro Trader RL** (Reinforcement Learning)。
 
+# v03 版本更新
+- 增加 T+1 信心度計算 (FEATURE_COLS 新增 LSTM_Conf_1d, 現有 24 個特徵)
+- 調整信心度門檻值
+| 模型 | threshold_high | threshold_low |
+|------|----------------|---------------|
+| **T+1** | 0.008 (0.8%) | 0.040 (4.0%) | 短期預測變異較大，每次 MC Dropout 的差異較明顯
+| **T+5** | 0.001 (0.1%) | 0.010 (1.0%) | 長期預測變異較小，每次 MC Dropout 的差異較小
+- 增加信心度對照表  
+  1. **信心度 0.8+**：可以更積極地參考 LSTM 的漲跌預測
+  2. **信心度 0.6-0.8**：預測方向可參考，但點位預估需打折扣
+  3. **信心度 0.4-0.6**：預測僅供輔助參考，建議搭配其他技術指標 ← 新增
+  4. **信心度 < 0.4**：模型對當天的判斷較不確定，可能是因為市場處於異常波動期
+- backtest 腳本使用回測 start_date 來選擇 LSTM 模型 (避免資料洩漏), 確保 train_end < start_date
+- 盤中daily ops將資料來源從 `yfinance` 改為 `證交所盤中 API (mis.twse.com.tw)`
+- 改用證交所即時API取得盤中OHLC資料, Volume 維持使用 CSV 前 5 日平均值
+- 新增「即時資料」特點說明
+- 交易明細紀錄信心度:
+  Daily ops 和 Backtest 的信心度都是接近 100%，這是因為：
+  1. 你的 PPO 模型訓練得非常完善 - 經過 1M+ 步的訓練，模型對每個決策都非常確定
+  2. 這是正常現象 - 充分訓練的強化學習模型會有非常「尖銳」的機率分佈
+
+
 ## ✨ 核心特色 (Key Features)
 
 | 特色 | 說明 |

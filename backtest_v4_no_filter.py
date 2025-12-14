@@ -84,6 +84,7 @@ def parse_args():
 class NoFilterBacktester:
     """
     無濾網回測器：每天都考慮買進訊號，不受 Signal_Buy_Filter 限制
+    v3.1: 新增信心度追蹤功能
     """
     def __init__(self, buy_model, sell_model, initial_capital=1_000_000):
         self.buy_model = buy_model
@@ -91,8 +92,9 @@ class NoFilterBacktester:
         self.initial_capital = initial_capital
         self.trades = []
         self.equity_curve = []
-        self.buy_signals = []
-        self.sell_signals = []
+        self.buy_signals = []   # (date, price, confidence)
+        self.sell_signals = []  # (date, price, confidence)
+        self.daily_confidence = []  # 每日信心度記錄
     
     def run(self, df: pd.DataFrame, feature_cols: list) -> dict:
         """執行無濾網回測"""
@@ -130,28 +132,54 @@ class NoFilterBacktester:
                 current_return = price / position['buy_price']
                 
                 # Sell Agent 觀察 (Features + Current Return)
-                sell_obs = np.concatenate([obs, [current_return]]).astype(np.float32)
-                action, _ = self.sell_model.predict(sell_obs.reshape(1, -1), deterministic=True)
+                sell_obs = np.concatenate([obs, [current_return]]).astype(np.float32).reshape(1, -1)
+                action, _ = self.sell_model.predict(sell_obs, deterministic=True)
+                
+                # 計算 Sell 信心度
+                sell_obs_tensor = self.sell_model.policy.obs_to_tensor(sell_obs)[0]
+                sell_probs = self.sell_model.policy.get_distribution(sell_obs_tensor).distribution.probs.detach().cpu().numpy()[0]
+                sell_confidence = float(sell_probs[1]) if action[0] == 1 else float(sell_probs[0])
+                
+                # 記錄每日信心度 (持有中)
+                self.daily_confidence.append({
+                    'date': date, 'status': 'holding', 'price': price,
+                    'buy_conf': None, 'sell_conf': sell_confidence,
+                    'sell_action': 'SELL' if action[0] == 1 else 'HOLD',
+                    'current_return': current_return
+                })
                 
                 # 停損/停利/AI決策/超時
                 stop_loss = current_return < 0.92  # -8% 停損
-                should_sell = action[0] == 1 or stop_loss or hold_days >= 120
+                ai_sell = action[0] == 1
+                timeout = hold_days >= 120
+                should_sell = ai_sell or stop_loss or timeout
                 
                 if should_sell:
                     sell_value = position['shares'] * price
                     profit = sell_value - position['shares'] * position['buy_price']
                     capital += sell_value
                     
+                    # 判斷賣出原因
+                    if stop_loss:
+                        sell_reason = 'stop_loss'
+                    elif timeout:
+                        sell_reason = 'timeout'
+                    else:
+                        sell_reason = 'ai_signal'
+                    
                     self.trades.append({
                         'buy_date': position['buy_date'],
                         'buy_price': position['buy_price'],
+                        'buy_confidence': position.get('buy_confidence', 0),
                         'sell_date': date,
                         'sell_price': price,
+                        'sell_confidence': sell_confidence,
+                        'sell_reason': sell_reason,
                         'return': current_return - 1,
                         'profit': profit,
                         'hold_days': hold_days
                     })
-                    self.sell_signals.append((date, price))
+                    self.sell_signals.append((date, price, sell_confidence))
                     position = None
             
             # =====================================================================
@@ -160,6 +188,19 @@ class NoFilterBacktester:
             elif position is None:
                 buy_obs = obs.reshape(1, -1)
                 action, _ = self.buy_model.predict(buy_obs, deterministic=True)
+                
+                # 計算 Buy 信心度
+                buy_obs_tensor = self.buy_model.policy.obs_to_tensor(buy_obs)[0]
+                buy_probs = self.buy_model.policy.get_distribution(buy_obs_tensor).distribution.probs.detach().cpu().numpy()[0]
+                buy_confidence = float(buy_probs[1]) if action[0] == 1 else float(buy_probs[0])
+                
+                # 記錄每日信心度 (空手)
+                self.daily_confidence.append({
+                    'date': date, 'status': 'idle', 'price': price,
+                    'buy_conf': buy_confidence, 'sell_conf': None,
+                    'buy_action': 'BUY' if action[0] == 1 else 'WAIT',
+                    'current_return': None
+                })
                 
                 if action[0] == 1:  # Buy
                     invest_amount = capital * 0.9
@@ -173,9 +214,10 @@ class NoFilterBacktester:
                             'shares': shares,
                             'buy_price': price,
                             'buy_date': date,
-                            'buy_idx': i
+                            'buy_idx': i,
+                            'buy_confidence': buy_confidence
                         }
-                        self.buy_signals.append((date, price))
+                        self.buy_signals.append((date, price, buy_confidence))
         
         return self._calculate_metrics(df)
     
@@ -435,20 +477,30 @@ def main():
              verticalalignment='bottom', horizontalalignment='right',
              bbox=props, family='monospace')
     
-    # 子圖 2: Price with Signals
+    # 子圖 2: Price with Signals (含信心度標註)
     ax2 = axes[1]
     price_slice = twii_backtest_df['Close']
     ax2.plot(price_slice.index, price_slice.values, label='^TWII Close', color='black', linewidth=1)
     
+    # Buy 訊號 (含信心度標註)
     if backtester.buy_signals:
-        buy_dates, buy_prices = zip(*backtester.buy_signals)
+        buy_dates, buy_prices, buy_confs = zip(*backtester.buy_signals)
         ax2.scatter(buy_dates, buy_prices, marker='^', color='red', s=100, label='Buy', zorder=5)
+        # 標註信心度
+        for dt, pr, conf in backtester.buy_signals:
+            ax2.annotate(f'{conf:.0%}', (dt, pr), textcoords="offset points", 
+                        xytext=(0, 10), ha='center', fontsize=7, color='red', fontweight='bold')
     
+    # Sell 訊號 (含信心度標註)
     if backtester.sell_signals:
-        sell_dates, sell_prices = zip(*backtester.sell_signals)
+        sell_dates, sell_prices, sell_confs = zip(*backtester.sell_signals)
         ax2.scatter(sell_dates, sell_prices, marker='v', color='green', s=100, label='Sell', zorder=5)
+        # 標註信心度
+        for dt, pr, conf in backtester.sell_signals:
+            ax2.annotate(f'{conf:.0%}', (dt, pr), textcoords="offset points", 
+                        xytext=(0, -15), ha='center', fontsize=7, color='green', fontweight='bold')
     
-    ax2.set_title('Trade Signals (No Filter)', fontsize=14)
+    ax2.set_title('Trade Signals with Confidence (No Filter)', fontsize=14)
     ax2.set_ylabel('Price')
     ax2.set_xlabel('Date')
     ax2.legend(loc='upper left')
@@ -496,16 +548,25 @@ def main():
     print(f"[Output] Metrics CSV: {metrics_path}")
     
     # =========================================================================
-    # 儲存交易明細
+    # 儲存交易明細 (含信心度)
     # =========================================================================
     if backtester.trades:
         trades_df = pd.DataFrame(backtester.trades)
         trades_path = os.path.join(RESULTS_PATH, f'trades_v4_no_filter_{start_str}_{end_str}.csv')
         trades_df.to_csv(trades_path, index=False)
-        print(f"[Output] 交易明細: {trades_path}")
+        print(f"[Output] 交易明細 (含信心度): {trades_path}")
         
         print("\n[Trades] 最近 5 筆交易:")
         print(trades_df.tail().to_string(index=False))
+    
+    # =========================================================================
+    # 儲存每日信心度記錄
+    # =========================================================================
+    if backtester.daily_confidence:
+        conf_df = pd.DataFrame(backtester.daily_confidence)
+        conf_path = os.path.join(RESULTS_PATH, f'daily_confidence_v4_{start_str}_{end_str}.csv')
+        conf_df.to_csv(conf_path, index=False)
+        print(f"[Output] 每日信心度: {conf_path}")
     
     print("\n" + "=" * 60)
     print("✅ 回測完成！")
